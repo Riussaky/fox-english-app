@@ -1,4 +1,4 @@
-const CACHE_NAME = "fox-english-v2";
+const CACHE_NAME = "fox-english-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,6 +7,8 @@ const ASSETS = [
   "./app.js",
   "./manifest.json",
   "./assets/favicon.svg",
+  "./assets/icon-192.png",
+  "./assets/icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {
