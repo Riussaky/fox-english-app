@@ -1,0 +1,42 @@
+{
+  "name": "fox-english",
+  "version": "1.0.0",
+  "description": "Fox English - Aprende inglés jugando (niños 5-12 años)",
+  "main": "main.js",
+  "scripts": {
+    "start:web": "node serve.js",
+    "start:electron": "electron .",
+    "dist:win": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.foxenglish.app",
+    "productName": "Fox English",
+    "files": [
+      "index.html",
+      "styles.css",
+      "data.js",
+      "app.js",
+      "main.js",
+      "manifest.json",
+      "assets/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "allowScripts": {
+    "electron@31.7.7": true
+  }
+}
