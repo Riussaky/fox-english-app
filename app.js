@@ -68,9 +68,9 @@ const AudioEngine = (() => {
   function scheduler() {
     if (!playing) return;
     while (nextNoteTime < ctx.currentTime + 0.5) {
-      pluck(MELODY[noteIndex % MELODY.length], nextNoteTime, NOTE_DUR * 0.85, "triangle", 0.05);
+      pluck(MELODY[noteIndex % MELODY.length], nextNoteTime, NOTE_DUR * 0.85, "triangle", 0.22);
       if (noteIndex % 4 === 0) {
-        pluck(BASS[Math.floor(noteIndex / 4) % BASS.length], nextNoteTime, NOTE_DUR * 4 * 0.9, "sine", 0.03);
+        pluck(BASS[Math.floor(noteIndex / 4) % BASS.length], nextNoteTime, NOTE_DUR * 4 * 0.9, "sine", 0.13);
       }
       nextNoteTime += NOTE_DUR;
       noteIndex++;
