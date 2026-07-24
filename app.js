@@ -48,16 +48,20 @@ const AudioEngine = (() => {
       ctx = new AC();
       masterGain = ctx.createGain();
       masterGain.gain.value = 0.0001;
-      // El compresor sube el volumen percibido (normaliza picos) sin distorsionar,
-      // clave para que se escuche bien en parlantes pequeños de celular.
+      // El compresor aplasta los picos para poder mandar una señal mucho más "caliente"
+      // sin distorsionar; la gananciade "makeup" después sube el volumen ya comprimido.
+      // Esto es clave para que se escuche fuerte en parlantes pequeños de celular.
       const compressor = ctx.createDynamicsCompressor();
-      compressor.threshold.value = -18;
-      compressor.knee.value = 24;
-      compressor.ratio.value = 6;
-      compressor.attack.value = 0.005;
-      compressor.release.value = 0.15;
+      compressor.threshold.value = -30;
+      compressor.knee.value = 12;
+      compressor.ratio.value = 10;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.12;
+      const makeupGain = ctx.createGain();
+      makeupGain.gain.value = 2.4;
       masterGain.connect(compressor);
-      compressor.connect(ctx.destination);
+      compressor.connect(makeupGain);
+      makeupGain.connect(ctx.destination);
     }
     return ctx;
   }
@@ -67,8 +71,10 @@ const AudioEngine = (() => {
     const g = ctx.createGain();
     osc.type = type;
     osc.frequency.value = freq;
+    const sustainUntil = time + dur * 0.55;
     g.gain.setValueAtTime(0.0001, time);
     g.gain.linearRampToValueAtTime(peak, time + 0.02);
+    g.gain.setValueAtTime(peak, sustainUntil);
     g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
     osc.connect(g);
     g.connect(masterGain);
@@ -79,9 +85,9 @@ const AudioEngine = (() => {
   function scheduler() {
     if (!playing) return;
     while (nextNoteTime < ctx.currentTime + 0.5) {
-      pluck(MELODY[noteIndex % MELODY.length], nextNoteTime, NOTE_DUR * 0.85, "triangle", 0.5);
+      pluck(MELODY[noteIndex % MELODY.length], nextNoteTime, NOTE_DUR * 0.85, "triangle", 0.8);
       if (noteIndex % 4 === 0) {
-        pluck(PAD[Math.floor(noteIndex / 4) % PAD.length], nextNoteTime, NOTE_DUR * 4 * 0.9, "sine", 0.28);
+        pluck(PAD[Math.floor(noteIndex / 4) % PAD.length], nextNoteTime, NOTE_DUR * 4 * 0.9, "sine", 0.42);
       }
       nextNoteTime += NOTE_DUR;
       noteIndex++;
