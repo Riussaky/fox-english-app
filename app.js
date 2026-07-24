@@ -3,6 +3,8 @@
 // ============================================================
 
 const STORAGE_KEY = "fox-english-progress-v1";
+const MUSIC_KEY = "fox-english-music-v1";
+const STARS_PER_ACTIVITY = 3;
 
 const STAR_SVG_ON = `<svg viewBox="0 0 24 24" fill="#FFD93D" stroke="#E8B923" stroke-width="1"><path d="M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7-6.2-3.8-6.2 3.8 1.6-7L2 9.2l7.1-.6z"/></svg>`;
 const STAR_SVG_OFF = `<svg viewBox="0 0 24 24" fill="#E8E8F0" stroke="#D8D8E0" stroke-width="1"><path d="M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7-6.2-3.8-6.2 3.8 1.6-7L2 9.2l7.1-.6z"/></svg>`;
@@ -23,6 +25,103 @@ const MASCOT_SVG = `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg
 
 const CONFETTI_COLORS = ["#FF6B6B", "#FFD93D", "#6BCB77", "#4D96FF", "#B18CF0", "#FFB84D"];
 
+// ---------------- Background music (synthesized, no external files) ----------------
+const AudioEngine = (() => {
+  let ctx = null;
+  let masterGain = null;
+  let playing = false;
+  let schedulerTimer = null;
+  let nextNoteTime = 0;
+  let noteIndex = 0;
+
+  // Melodía alegre en pentatónica de Do mayor (C D E G A), estilo cajita de música
+  const MELODY = [261.63, 293.66, 329.63, 392.0, 440.0, 392.0, 329.63, 293.66];
+  const BASS = [130.81, 196.0, 174.61, 196.0]; // C3 G3 F3 G3
+  const NOTE_DUR = 0.3;
+
+  function ensureCtx() {
+    if (!ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      ctx = new AC();
+      masterGain = ctx.createGain();
+      masterGain.gain.value = 0.0001;
+      masterGain.connect(ctx.destination);
+    }
+    return ctx;
+  }
+
+  function pluck(freq, time, dur, type, peak) {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, time);
+    g.gain.linearRampToValueAtTime(peak, time + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    osc.connect(g);
+    g.connect(masterGain);
+    osc.start(time);
+    osc.stop(time + dur + 0.05);
+  }
+
+  function scheduler() {
+    if (!playing) return;
+    while (nextNoteTime < ctx.currentTime + 0.5) {
+      pluck(MELODY[noteIndex % MELODY.length], nextNoteTime, NOTE_DUR * 0.85, "triangle", 0.05);
+      if (noteIndex % 4 === 0) {
+        pluck(BASS[Math.floor(noteIndex / 4) % BASS.length], nextNoteTime, NOTE_DUR * 4 * 0.9, "sine", 0.03);
+      }
+      nextNoteTime += NOTE_DUR;
+      noteIndex++;
+    }
+    schedulerTimer = setTimeout(scheduler, 120);
+  }
+
+  function start() {
+    if (playing) return;
+    if (!ensureCtx()) return;
+    if (ctx.state === "suspended") ctx.resume();
+    playing = true;
+    masterGain.gain.cancelScheduledValues(ctx.currentTime);
+    masterGain.gain.linearRampToValueAtTime(1, ctx.currentTime + 0.6);
+    nextNoteTime = ctx.currentTime + 0.1;
+    noteIndex = 0;
+    scheduler();
+  }
+
+  function stop() {
+    if (!playing) return;
+    playing = false;
+    if (schedulerTimer) clearTimeout(schedulerTimer);
+    if (ctx && masterGain) {
+      masterGain.gain.cancelScheduledValues(ctx.currentTime);
+      masterGain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 0.3);
+    }
+  }
+
+  return { start, stop };
+})();
+
+let musicPref = localStorage.getItem(MUSIC_KEY) !== "off";
+
+function setMusicPref(on) {
+  musicPref = on;
+  localStorage.setItem(MUSIC_KEY, on ? "on" : "off");
+  if (on) AudioEngine.start();
+  else AudioEngine.stop();
+}
+
+function initMusicAutoStart() {
+  const startOnce = () => {
+    if (musicPref) AudioEngine.start();
+    document.removeEventListener("click", startOnce);
+    document.removeEventListener("touchstart", startOnce);
+  };
+  document.addEventListener("click", startOnce, { once: true });
+  document.addEventListener("touchstart", startOnce, { once: true });
+}
+
 // ---------------- Progress persistence ----------------
 function loadProgress() {
   try {
@@ -40,19 +139,28 @@ function lessonKey(levelId, lessonId) {
   return `${levelId}.${lessonId}`;
 }
 const ACTIVITIES = ["flashcards", "memory", "quiz", "drag", "scramble"];
+const MAX_LESSON_STARS = ACTIVITIES.length * STARS_PER_ACTIVITY;
 
 function getLessonProgress(levelId, lessonId) {
   const key = lessonKey(levelId, lessonId);
-  return progress[key] || { flashcards: false, memory: false, quiz: false, drag: false, scramble: false, stars: 0 };
+  return progress[key] || { flashcards: 0, memory: 0, quiz: 0, drag: 0, scramble: 0, stars: 0 };
 }
-function setLessonProgress(levelId, lessonId, data) {
+// Guarda el mejor puntaje (1-3 estrellas) obtenido en una actividad; nunca baja el récord previo.
+function setActivityStars(levelId, lessonId, activityKey, starsEarned) {
   const key = lessonKey(levelId, lessonId);
   const current = getLessonProgress(levelId, lessonId);
-  const merged = { ...current, ...data };
-  merged.stars = ACTIVITIES.reduce((sum, a) => sum + (merged[a] ? 1 : 0), 0);
+  const prevStars = current[activityKey] || 0;
+  const newStars = Math.max(prevStars, starsEarned);
+  const merged = { ...current, [activityKey]: newStars };
+  merged.stars = ACTIVITIES.reduce((sum, a) => sum + (merged[a] || 0), 0);
   progress[key] = merged;
   saveProgress(progress);
-  return merged;
+  return { progress: merged, improved: newStars > prevStars };
+}
+function starsForScore(mistakes, total) {
+  if (mistakes <= 0) return 3;
+  if (mistakes <= Math.max(1, Math.ceil(total * 0.3))) return 2;
+  return 1;
 }
 function totalStars() {
   return Object.values(progress).reduce((sum, l) => sum + (l.stars || 0), 0);
@@ -100,15 +208,22 @@ function launchConfetti() {
     setTimeout(() => piece.remove(), 3600);
   }
 }
+function starsRow(n, max) {
+  return Array.from({ length: max }, (_, idx) => idx + 1).map((i) => (n >= i ? STAR_SVG_ON : STAR_SVG_OFF)).join("");
+}
 
 // ---------------- App shell ----------------
 const app = document.getElementById("app");
 
-function topbar(showBack, onBack) {
+function topbar(showBack) {
+  const musicIcon = musicPref ? "🎵" : "🔇";
   return `
     <div class="topbar">
       ${showBack ? `<button class="back-btn" id="backBtn">← Volver</button>` : `<div class="brand">${MASCOT_SVG.replace('viewBox="0 0 120 120"', 'viewBox="0 0 120 120" class="mascot-mini"')} Fox English</div>`}
-      <div class="stars-total">${STAR_SVG_ON} ${totalStars()}</div>
+      <div class="topbar-right">
+        <button class="music-btn ${musicPref ? "" : "music-off"}" id="musicBtn" title="Música">${musicIcon}</button>
+        <div class="stars-total">${STAR_SVG_ON} ${totalStars()}</div>
+      </div>
     </div>
   `;
 }
@@ -122,15 +237,24 @@ function mascotMessage(text) {
   `;
 }
 
-function attachBack(handler) {
-  const btn = document.getElementById("backBtn");
-  if (btn) btn.addEventListener("click", handler);
+// Conecta el botón "Volver" (si existe) y el botón de música de la topbar.
+function wireTopbar(onBack) {
+  const backBtnEl = document.getElementById("backBtn");
+  if (backBtnEl && onBack) backBtnEl.addEventListener("click", onBack);
+  const musicBtn = document.getElementById("musicBtn");
+  if (musicBtn) {
+    musicBtn.addEventListener("click", () => {
+      setMusicPref(!musicPref);
+      musicBtn.textContent = musicPref ? "🎵" : "🔇";
+      musicBtn.classList.toggle("music-off", !musicPref);
+    });
+  }
 }
 
 // ---------------- Screen: Home ----------------
 function renderHome() {
   const cards = LEVELS.map((level, i) => {
-    const totalLessonStars = level.lessons.length * ACTIVITIES.length;
+    const totalLessonStars = level.lessons.length * MAX_LESSON_STARS;
     const earned = levelStars(level);
     const pct = Math.round((earned / totalLessonStars) * 100);
     return `
@@ -150,6 +274,7 @@ function renderHome() {
     <div class="level-grid">${cards}</div>
     <footer class="credit">Hecho con cariño para pequeños exploradores del inglés 🌟</footer>
   `;
+  wireTopbar();
 
   app.querySelectorAll(".level-card").forEach((btn) => {
     btn.addEventListener("click", () => renderLevel(btn.dataset.level));
@@ -171,13 +296,11 @@ function renderLevel(levelId) {
   const level = findLevel(levelId);
   const cards = level.lessons.map((lesson, i) => {
     const p = getLessonProgress(level.id, lesson.id);
-    const stars = Array.from({ length: ACTIVITIES.length }, (_, idx) => idx + 1)
-      .map((n) => (p.stars >= n ? STAR_SVG_ON : STAR_SVG_OFF)).join("");
     return `
       <button class="lesson-card" style="animation-delay:${i * 0.07}s" data-lesson="${lesson.id}">
         <span class="emoji">${lesson.icon}</span>
         <h3>${lesson.name}</h3>
-        <div class="stars-row">${stars}</div>
+        <div class="lesson-stars">${STAR_SVG_ON} ${p.stars} / ${MAX_LESSON_STARS}</div>
       </button>
     `;
   }).join("");
@@ -188,7 +311,7 @@ function renderLevel(levelId) {
     <p class="subtitle">${level.subtitle} Elige una lección para empezar.</p>
     <div class="lesson-grid">${cards}</div>
   `;
-  attachBack(renderHome);
+  wireTopbar(renderHome);
   app.querySelectorAll(".lesson-card").forEach((btn) => {
     btn.addEventListener("click", () => renderLessonMenu(levelId, btn.dataset.lesson));
   });
@@ -206,31 +329,36 @@ function renderLessonMenu(levelId, lessonId) {
       <button class="activity-card act-flash" data-act="flash">
         <span class="big-emoji">🗂️</span>
         <h3>Tarjetas</h3>
-        <p>Conoce las palabras nuevas ${p.flashcards ? "✅" : ""}</p>
+        <p>Conoce las palabras nuevas</p>
+        <div class="mini-stars">${starsRow(p.flashcards, STARS_PER_ACTIVITY)}</div>
       </button>
       <button class="activity-card act-memory" data-act="memory">
         <span class="big-emoji">🧠</span>
         <h3>Memorama</h3>
-        <p>Encuentra las parejas ${p.memory ? "✅" : ""}</p>
+        <p>Encuentra las parejas</p>
+        <div class="mini-stars">${starsRow(p.memory, STARS_PER_ACTIVITY)}</div>
       </button>
       <button class="activity-card act-quiz" data-act="quiz">
         <span class="big-emoji">❓</span>
         <h3>Quiz</h3>
-        <p>Pon a prueba lo aprendido ${p.quiz ? "✅" : ""}</p>
+        <p>Pon a prueba lo aprendido</p>
+        <div class="mini-stars">${starsRow(p.quiz, STARS_PER_ACTIVITY)}</div>
       </button>
       <button class="activity-card act-drag" data-act="drag">
         <span class="big-emoji">🖐️</span>
         <h3>Arrastra y Une</h3>
-        <p>Une cada imagen con su palabra ${p.drag ? "✅" : ""}</p>
+        <p>Une cada imagen con su palabra</p>
+        <div class="mini-stars">${starsRow(p.drag, STARS_PER_ACTIVITY)}</div>
       </button>
       <button class="activity-card act-scramble" data-act="scramble">
         <span class="big-emoji">🔤</span>
         <h3>Ordena las Letras</h3>
-        <p>Forma la palabra en inglés ${p.scramble ? "✅" : ""}</p>
+        <p>Forma la palabra en inglés</p>
+        <div class="mini-stars">${starsRow(p.scramble, STARS_PER_ACTIVITY)}</div>
       </button>
     </div>
   `;
-  attachBack(() => renderLevel(levelId));
+  wireTopbar(() => renderLevel(levelId));
   app.querySelectorAll(".activity-card").forEach((btn) => {
     const act = btn.dataset.act;
     btn.addEventListener("click", () => {
@@ -278,7 +406,7 @@ function renderFlashcards(levelId, lessonId) {
         </div>
       </div>
     `;
-    attachBack(() => renderLessonMenu(levelId, lessonId));
+    wireTopbar(() => renderLessonMenu(levelId, lessonId));
 
     const card = document.getElementById("flashcard");
     card.addEventListener("click", () => {
@@ -295,9 +423,8 @@ function renderFlashcards(levelId, lessonId) {
     if (nextBtn) nextBtn.addEventListener("click", () => { index++; flipped = false; draw(); });
     const finishBtn = document.getElementById("finishBtn");
     if (finishBtn) finishBtn.addEventListener("click", () => {
-      const wasDone = getLessonProgress(levelId, lessonId).flashcards;
-      setLessonProgress(levelId, lessonId, { flashcards: true });
-      renderComplete(levelId, lessonId, "flash", !wasDone);
+      const { improved } = setActivityStars(levelId, lessonId, "flashcards", 3);
+      renderComplete(levelId, lessonId, "flash", 3, improved);
     });
   }
   draw();
@@ -317,6 +444,7 @@ function renderMemory(levelId, lessonId) {
   let first = null;
   let lock = false;
   let matches = 0;
+  let mistakes = 0;
 
   function draw() {
     app.innerHTML = `
@@ -325,7 +453,7 @@ function renderMemory(levelId, lessonId) {
       <p class="subtitle">Encuentra la pareja: imagen + palabra (${matches}/${chosen.length})</p>
       <div class="memory-grid" id="memGrid"></div>
     `;
-    attachBack(() => renderLessonMenu(levelId, lessonId));
+    wireTopbar(() => renderLessonMenu(levelId, lessonId));
 
     const grid = document.getElementById("memGrid");
     cards.forEach((c, idx) => {
@@ -367,12 +495,13 @@ function renderMemory(levelId, lessonId) {
       setTimeout(draw, 200);
       if (matches === chosen.length) {
         setTimeout(() => {
-          const wasDone = getLessonProgress(levelId, lessonId).memory;
-          setLessonProgress(levelId, lessonId, { memory: true });
-          renderComplete(levelId, lessonId, "memory", !wasDone);
+          const earned = starsForScore(mistakes, chosen.length);
+          const { improved } = setActivityStars(levelId, lessonId, "memory", earned);
+          renderComplete(levelId, lessonId, "memory", earned, improved);
         }, 500);
       }
     } else {
+      mistakes++;
       setTimeout(() => {
         a.flipped = false;
         b.flipped = false;
@@ -411,7 +540,7 @@ function renderQuiz(levelId, lessonId) {
         </div>
       </div>
     `;
-    attachBack(() => renderLessonMenu(levelId, lessonId));
+    wireTopbar(() => renderLessonMenu(levelId, lessonId));
 
     app.querySelectorAll(".quiz-option").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -435,9 +564,10 @@ function renderQuiz(levelId, lessonId) {
   function finishQuiz() {
     const passed = correctCount >= Math.ceil(questions.length * 0.6);
     if (passed) {
-      const wasDone = getLessonProgress(levelId, lessonId).quiz;
-      setLessonProgress(levelId, lessonId, { quiz: true });
-      renderComplete(levelId, lessonId, "quiz", !wasDone, correctCount, questions.length);
+      const wrong = questions.length - correctCount;
+      const earned = starsForScore(wrong, questions.length);
+      const { improved } = setActivityStars(levelId, lessonId, "quiz", earned);
+      renderComplete(levelId, lessonId, "quiz", earned, improved, correctCount, questions.length);
     } else {
       renderQuizRetry(levelId, lessonId, correctCount, questions.length);
     }
@@ -456,7 +586,7 @@ function renderQuizRetry(levelId, lessonId, correct, total) {
       <button class="primary-btn" id="retryBtn">Intentar otra vez</button>
     </div>
   `;
-  attachBack(() => renderLessonMenu(levelId, lessonId));
+  wireTopbar(() => renderLessonMenu(levelId, lessonId));
   document.getElementById("retryBtn").addEventListener("click", () => renderQuiz(levelId, lessonId));
 }
 
@@ -466,6 +596,7 @@ function renderDrag(levelId, lessonId) {
   const words = shuffle(lesson.words);
   const zoneOrder = shuffle(words);
   let placed = 0;
+  let mistakes = 0;
 
   function draw() {
     app.innerHTML = `
@@ -486,7 +617,7 @@ function renderDrag(levelId, lessonId) {
         </div>
       </div>
     `;
-    attachBack(() => renderLessonMenu(levelId, lessonId));
+    wireTopbar(() => renderLessonMenu(levelId, lessonId));
 
     document.querySelectorAll(".drag-chip").forEach((chip) => {
       chip.addEventListener("pointerdown", (e) => startDrag(e, chip));
@@ -528,12 +659,13 @@ function renderDrag(levelId, lessonId) {
         if (sub) sub.textContent = `Arrastra cada palabra hacia su imagen (${placed}/${words.length})`;
         if (placed === words.length) {
           setTimeout(() => {
-            const wasDone = getLessonProgress(levelId, lessonId).drag;
-            setLessonProgress(levelId, lessonId, { drag: true });
-            renderComplete(levelId, lessonId, "drag", !wasDone);
+            const earned = starsForScore(mistakes, words.length);
+            const { improved } = setActivityStars(levelId, lessonId, "drag", earned);
+            renderComplete(levelId, lessonId, "drag", earned, improved);
           }, 500);
         }
       } else {
+        mistakes++;
         chip.style.position = "";
         chip.style.left = "";
         chip.style.top = "";
@@ -554,7 +686,7 @@ function renderScramble(levelId, lessonId) {
   const lesson = findLesson(levelId, lessonId);
   const words = shuffle(lesson.words);
   let index = 0;
-  let correctCount = 0;
+  let mistakes = 0;
   let letters = [];
   let slots = [];
 
@@ -582,7 +714,7 @@ function renderScramble(levelId, lessonId) {
         <button class="nav-btn" id="clearBtn" title="Borrar">🧹</button>
       </div>
     `;
-    attachBack(() => renderLessonMenu(levelId, lessonId));
+    wireTopbar(() => renderLessonMenu(levelId, lessonId));
 
     document.querySelectorAll(".scramble-letter").forEach((btn) => {
       btn.addEventListener("click", () => onLetterClick(Number(btn.dataset.id)));
@@ -622,7 +754,6 @@ function renderScramble(levelId, lessonId) {
     const attempt = slots.map((s) => s.ch).join("");
     const word = words[index];
     if (attempt === word.en.toLowerCase()) {
-      correctCount++;
       speak(word.en);
       const slotsEl = document.getElementById("scrambleSlots");
       if (slotsEl) slotsEl.classList.add("correct-flash");
@@ -632,6 +763,7 @@ function renderScramble(levelId, lessonId) {
         else finish();
       }, 900);
     } else {
+      mistakes++;
       const slotsEl = document.getElementById("scrambleSlots");
       if (slotsEl) slotsEl.classList.add("shake");
       setTimeout(() => resetSlots(true), 500);
@@ -639,9 +771,9 @@ function renderScramble(levelId, lessonId) {
   }
 
   function finish() {
-    const wasDone = getLessonProgress(levelId, lessonId).scramble;
-    setLessonProgress(levelId, lessonId, { scramble: true });
-    renderComplete(levelId, lessonId, "scramble", !wasDone, correctCount, words.length);
+    const earned = starsForScore(mistakes, words.length);
+    const { improved } = setActivityStars(levelId, lessonId, "scramble", earned);
+    renderComplete(levelId, lessonId, "scramble", earned, improved);
   }
 
   setupWord();
@@ -649,34 +781,36 @@ function renderScramble(levelId, lessonId) {
 }
 
 // ---------------- Screen: Completion ----------------
-function renderComplete(levelId, lessonId, activity, isFirstTime, correct, total) {
+function renderComplete(levelId, lessonId, activity, starsEarned, isFirstTime, correct, total) {
   const lesson = findLesson(levelId, lessonId);
   const p = getLessonProgress(levelId, lessonId);
-  const messages = {
-    flash: "¡Aprendiste palabras nuevas!",
-    memory: "¡Encontraste todas las parejas!",
-    quiz: `¡Excelente quiz${correct !== undefined ? ` (${correct}/${total})` : ""}!`,
-    drag: "¡Uniste todas las palabras!",
-    scramble: "¡Ordenaste las letras genial!",
+  const activityNames = {
+    flash: "Tarjetas",
+    memory: "Memorama",
+    quiz: `Quiz${correct !== undefined ? ` (${correct}/${total})` : ""}`,
+    drag: "Arrastra y Une",
+    scramble: "Ordena las Letras",
   };
-  const starsMax = ACTIVITIES.length;
+  const perfMessage = starsEarned >= 3 ? "¡Perfecto! 🌟" : starsEarned === 2 ? "¡Muy bien! 👍" : "¡Bien hecho! Sigue practicando";
   app.innerHTML = `
     ${topbar(true)}
     <div class="complete-wrap">
       <div class="complete-mascot">${MASCOT_SVG}</div>
-      <h2>${messages[activity]}</h2>
-      <div class="big-stars">${Array.from({ length: starsMax }, (_, idx) => idx + 1).map((n) => (p.stars >= n ? STAR_SVG_ON : STAR_SVG_OFF)).join("")}</div>
-      <p>Llevas ${p.stars} de ${starsMax} estrellas en "${lesson.name}"</p>
+      <h2>${perfMessage}</h2>
+      <p class="activity-label">${activityNames[activity]}</p>
+      <div class="big-stars">${starsRow(starsEarned, STARS_PER_ACTIVITY)}</div>
+      <p>Llevas ${p.stars} de ${MAX_LESSON_STARS} estrellas en "${lesson.name}"</p>
       <button class="primary-btn" id="continueBtn">Continuar</button>
     </div>
   `;
-  attachBack(() => renderLessonMenu(levelId, lessonId));
+  wireTopbar(() => renderLessonMenu(levelId, lessonId));
   document.getElementById("continueBtn").addEventListener("click", () => renderLessonMenu(levelId, lessonId));
-  if (isFirstTime) launchConfetti();
+  if (isFirstTime || starsEarned >= 3) launchConfetti();
 }
 
 // ---------------- Init ----------------
 renderHome();
+initMusicAutoStart();
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   window.addEventListener("load", () => {
