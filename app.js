@@ -36,7 +36,9 @@ const AudioEngine = (() => {
 
   // Melodía alegre en pentatónica de Do mayor (C D E G A), estilo cajita de música
   const MELODY = [261.63, 293.66, 329.63, 392.0, 440.0, 392.0, 329.63, 293.66];
-  const BASS = [130.81, 196.0, 174.61, 196.0]; // C3 G3 F3 G3
+  // Acompañamiento una octava más alto que un bajo real: los parlantes de celular
+  // casi no reproducen graves, así que un "bajo" grave se oye casi mudo en Android.
+  const PAD = [261.63, 392.0, 349.23, 392.0]; // C4 G4 F4 G4
   const NOTE_DUR = 0.3;
 
   function ensureCtx() {
@@ -46,7 +48,16 @@ const AudioEngine = (() => {
       ctx = new AC();
       masterGain = ctx.createGain();
       masterGain.gain.value = 0.0001;
-      masterGain.connect(ctx.destination);
+      // El compresor sube el volumen percibido (normaliza picos) sin distorsionar,
+      // clave para que se escuche bien en parlantes pequeños de celular.
+      const compressor = ctx.createDynamicsCompressor();
+      compressor.threshold.value = -18;
+      compressor.knee.value = 24;
+      compressor.ratio.value = 6;
+      compressor.attack.value = 0.005;
+      compressor.release.value = 0.15;
+      masterGain.connect(compressor);
+      compressor.connect(ctx.destination);
     }
     return ctx;
   }
@@ -68,9 +79,9 @@ const AudioEngine = (() => {
   function scheduler() {
     if (!playing) return;
     while (nextNoteTime < ctx.currentTime + 0.5) {
-      pluck(MELODY[noteIndex % MELODY.length], nextNoteTime, NOTE_DUR * 0.85, "triangle", 0.22);
+      pluck(MELODY[noteIndex % MELODY.length], nextNoteTime, NOTE_DUR * 0.85, "triangle", 0.5);
       if (noteIndex % 4 === 0) {
-        pluck(BASS[Math.floor(noteIndex / 4) % BASS.length], nextNoteTime, NOTE_DUR * 4 * 0.9, "sine", 0.13);
+        pluck(PAD[Math.floor(noteIndex / 4) % PAD.length], nextNoteTime, NOTE_DUR * 4 * 0.9, "sine", 0.28);
       }
       nextNoteTime += NOTE_DUR;
       noteIndex++;
